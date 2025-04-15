@@ -1,0 +1,31 @@
+[frontend]
+frontend-server ansible_host=10.0.8.49
+
+[backend]
+backend-server ansible_host=10.0.0.22
+
+[messaging]
+messaging-server ansible_host=10.0.0.21
+
+[database]
+database-server ansible_host=10.0.10.169
+
+[frontend_backups]
+backend-server
+messaging-server
+
+[backend_backups]
+frontend-server
+database-server
+
+[messaging_backups]
+frontend-server
+database-server
+
+[database_backups]
+backend-server
+messaging-server
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=/home/ubuntu/.ssh/id_rsa

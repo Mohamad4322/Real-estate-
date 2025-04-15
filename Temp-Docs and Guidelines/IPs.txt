@@ -1,0 +1,7 @@
+These are the IPs for each respective VM
+Hosted on VPN using Tailscale
+
+100.107.33.60   bryan (messaging)           
+100.70.91.110   backend        
+100.82.47.115   database
+100.71.100.5    frontend

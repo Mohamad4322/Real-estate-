@@ -1,0 +1,60 @@
+---
+- name: Activate Frontend Backup
+  hosts: frontend_backups
+  become: yes
+  vars:
+    failed_instance: "{{ failed_instance }}"
+    
+  tasks:
+    - name: Check if this host should activate
+      set_fact:
+        activate_backup: "{{ inventory_hostname != failed_instance }}"
+      
+    - name: Update frontend environment variables
+      template:
+        src: /home/ubuntu/Capstone-Group-01/aws/ansible/templates/env.j2
+        dest: "/var/www/frontend/.env"
+      vars:
+        backend_host: "{{ hostvars['backend-server']['ansible_host'] }}"
+      when: activate_backup
+      
+    - name: Enable Nginx site
+      file:
+        src: /etc/nginx/sites-available/frontend
+        dest: /etc/nginx/sites-enabled/frontend
+        state: link
+      when: activate_backup
+      
+    - name: Start Frontend service
+      shell: |
+        cd ~/Capstone-Group-01/demo || { echo 'Demo directory not found!'; exit 1; }
+        if pgrep -f 'react-scripts' > /dev/null; then
+            echo 'Frontend service is already running.'
+        else
+            echo 'Starting Frontend Service...'
+            nohup ./start-frontend.sh > frontend.log 2>&1 &
+            disown
+            echo 'Frontend service started successfully.'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      become: yes
+      become_user: ubuntu
+      when: activate_backup
+      
+    - name: Configure virtual IP
+      command: ip addr add 10.0.8.200/24 dev eth0
+      ignore_errors: yes
+      when: activate_backup
+      
+    - name: Update Route 53 DNS record
+      route53:
+        state: present
+        zone: "yourdomain.com"
+        record: "app.yourdomain.com"
+        type: A
+        ttl: 60
+        value: "{{ ansible_default_ipv4.address }}"
+        overwrite: yes
+      when: activate_backup

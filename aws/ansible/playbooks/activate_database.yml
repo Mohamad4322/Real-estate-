@@ -1,0 +1,77 @@
+---
+- name: Activate Database Backup
+  hosts: database_backups
+  become: yes
+  vars:
+    failed_instance: "{{ failed_instance }}"
+    
+  tasks:
+    - name: Check if this host should activate
+      set_fact:
+        activate_backup: "{{ inventory_hostname != failed_instance }}"
+      
+    - name: Start MySQL service
+      shell: |
+        if ss -tuln | grep -q ':3306'; then
+            echo 'MySQL is already running on port 3306.'
+        else
+            echo 'Starting MySQL service...'
+            sudo systemctl start mysql
+            echo 'MySQL service started successfully.'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      when: activate_backup
+      
+    - name: Get replication status
+      mysql_replication:
+        mode: getprimary
+        login_user: root
+        login_password: admin
+      register: repl_status
+      when: activate_backup
+      
+    - name: Stop MySQL slave
+      mysql_replication:
+        mode: stopslave
+        login_user: root
+        login_password: admin
+      when: activate_backup and repl_status.Is_Slave is defined and repl_status.Is_Slave
+      
+    - name: Promote to master
+      mysql_replication:
+        mode: resetprimary
+        login_user: root
+        login_password: admin
+      when: activate_backup and repl_status.Is_Slave is defined and repl_status.Is_Slave
+      
+    - name: Update MySQL configuration
+      template:
+        src: /home/ubuntu/Capstone-Group-01/aws/ansible/templates/my.cnf.j2
+        dest: /etc/mysql/my.cnf
+      vars:
+        is_backup_node: false
+      when: activate_backup
+      
+    - name: Restart MySQL service
+      service:
+        name: mysql
+        state: restarted
+      when: activate_backup
+      
+    - name: Configure virtual IP
+      command: ip addr add 10.0.10.200/24 dev eth0
+      ignore_errors: yes
+      when: activate_backup
+      
+    - name: Update Route 53 DNS record
+      route53:
+        state: present
+        zone: "yourdomain.com"
+        record: "db.yourdomain.com"
+        type: A
+        ttl: 60
+        value: "{{ ansible_default_ipv4.address }}"
+        overwrite: yes
+      when: activate_backup

@@ -1,0 +1,33 @@
+# RabbitMQ configuration
+
+listeners.tcp.default = 5672
+management.tcp.port = 15672
+
+# Default user access
+default_user = admin
+default_pass = admin
+
+# Allow connections from all interfaces
+listeners.tcp.local = 0.0.0.0:5672
+
+# Set hostname
+hostname = {{ ansible_hostname }}
+
+# Logging
+log.file.level = info
+
+# Memory and disk thresholds
+vm_memory_high_watermark.relative = 0.8
+disk_free_limit.relative = 2.0
+
+{% if is_backup_node %}
+# Backup node configuration (for failover)
+cluster_partition_handling = autoheal
+{% else %}
+# Primary node configuration
+cluster_partition_handling = autoheal
+{% endif %}
+
+# Real estate app specific settings
+# Set message TTL to 24 hours (in milliseconds)
+consumer_timeout = 86400000

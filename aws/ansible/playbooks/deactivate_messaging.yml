@@ -1,0 +1,22 @@
+---
+- name: Deactivate RabbitMQ Backup
+  hosts: messaging_backups
+  become: yes
+  vars:
+    recovered_instance: "{{ recovered_instance }}"
+    
+  tasks:
+    - name: Check if this host should deactivate
+      set_fact:
+        deactivate_backup: "{{ inventory_hostname != recovered_instance }}"
+      
+    - name: Stop RabbitMQ service
+      service:
+        name: rabbitmq-server
+        state: stopped
+      when: deactivate_backup
+      
+    - name: Remove virtual IP
+      command: ip addr del 10.0.0.200/24 dev eth0
+      ignore_errors: yes
+      when: deactivate_backup

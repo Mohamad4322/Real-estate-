@@ -1,0 +1,165 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: #111111;
+}
+
+.search-page {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+.search-container, .map-container {
+  flex: 1;
+  height: 100vh;
+  display: flex;
+  min-width: 50%;
+  max-width: 50%;
+  position: relative;
+}
+
+.search-container {
+  background-color: #111111;
+  flex-direction: column;
+  align-items: center;
+  padding: 5px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  position: relative;
+  z-index: 2;
+}
+
+.search-container h1 {
+  width: 100%;
+  text-align: center;
+  background-color: #111111;
+  padding: 15px 0;
+  font-size: 1.8rem;
+  border-bottom: 2px solid #888888;
+  color: #eeeeee;
+  text-shadow: 0 0 10px #ffffff;
+}
+
+.search-form {
+  width: 90%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  padding: 15px;
+}
+
+.search-form input {
+  flex: 1 1 calc(33% - 10px);
+  min-width: 150px;
+  background: #1a1a1a;
+  border: 1px solid #888888;
+  border-radius: 5px;
+  color: #d0d0d0;
+  padding: 10px;
+  outline: none;
+}
+
+.search-form button {
+  flex: 1 1 100%;
+  background-color: #888888;
+  border: none;
+  border-radius: 5px;
+  color: black;
+  cursor: pointer;
+  padding: 10px 20px;
+  font-size: 1rem;
+}
+
+.property-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  width: 100%;
+  flex-grow: 1;
+  overflow-y: auto;
+}
+
+.property-card {
+  display: flex;
+  background-color: #1a1a1a;
+  padding: 10px;
+  border: 1px solid #888888;
+  border-radius: 5px;
+  width: 90%;
+  max-width: 600px;
+  margin: auto;
+  gap: 10px;
+  align-items: center;
+  transition: transform 0.2s ease-in-out, box-shadow 0.3s ease-in-out;
+}
+
+.property-card:hover {
+  box-shadow: 0px 0px 20px 5px rgba(255, 255, 255, 0.8);
+  transform: scale(1.05);
+  cursor: pointer;
+}
+
+.property-card:active {
+  box-shadow: 0px 0px 30px 10px rgba(255, 255, 255, 1);
+}
+
+.property-image-container {
+  flex: 0 0 50%;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+
+.property-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+
+.property-info {
+  flex: 0 0 50%;
+  color: #d0d0d0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 5px;
+}
+
+
+.map-container {
+  background-color: #222222;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  flex: 1;
+  min-width: 50%;
+  max-width: 50%;
+  overflow: hidden;
+}
+
+
+.map-container > div {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}

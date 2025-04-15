@@ -1,0 +1,56 @@
+---
+- name: Activate RabbitMQ Backup
+  hosts: messaging_backups
+  become: yes
+  vars:
+    failed_instance: "{{ failed_instance }}"
+    
+  tasks:
+    - name: Check if this host should activate
+      set_fact:
+        activate_backup: "{{ inventory_hostname != failed_instance }}"
+      
+    - name: Update RabbitMQ configuration
+      template:
+        src: /home/ubuntu/Capstone-Group-01/aws/ansible/templates/rabbitmq.conf.j2
+        dest: /etc/rabbitmq/rabbitmq.conf
+      vars:
+        is_backup_node: false
+      when: activate_backup
+      
+    - name: Start RabbitMQ service
+      shell: |
+        if ss -tuln | grep -q ':5672'; then
+            echo 'RabbitMQ is already running on port 5672.'
+        else
+            echo 'Starting RabbitMQ service...'
+            sudo systemctl start rabbitmq-server
+            echo 'RabbitMQ service started successfully.'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      when: activate_backup
+      
+    - name: Wait for RabbitMQ to start
+      wait_for:
+        port: 5672
+        delay: 10
+        timeout: 60
+      when: activate_backup
+      
+    - name: Configure virtual IP
+      command: ip addr add 10.0.0.200/24 dev eth0
+      ignore_errors: yes
+      when: activate_backup
+      
+    - name: Update Route 53 DNS record
+      route53:
+        state: present
+        zone: "yourdomain.com"
+        record: "rabbitmq.yourdomain.com"
+        type: A
+        ttl: 60
+        value: "{{ ansible_default_ipv4.address }}"
+        overwrite: yes
+      when: activate_backup

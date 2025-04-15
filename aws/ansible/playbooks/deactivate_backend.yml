@@ -1,0 +1,38 @@
+---
+- name: Deactivate Backend Backup
+  hosts: backend_backups
+  become: yes
+  vars:
+    recovered_instance: "{{ recovered_instance }}"
+    
+  tasks:
+    - name: Check if this host should deactivate
+      set_fact:
+        deactivate_backup: "{{ inventory_hostname != recovered_instance }}"
+      
+    - name: Stop Node.js backend service
+      shell: |
+        if pgrep -f 'node server.js' > /dev/null; then
+            echo 'Stopping Backend Service...'
+            pkill -f 'node server.js'
+            echo 'Backend Service stopped successfully.'
+        else
+            echo 'Backend service is not running.'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      become: yes
+      become_user: ubuntu
+      when: deactivate_backup
+      
+    - name: Stop PHP-FPM service
+      service:
+        name: php-fpm
+        state: stopped
+      when: deactivate_backup
+      
+    - name: Remove virtual IP
+      command: ip addr del 10.0.0.210/24 dev eth0
+      ignore_errors: yes
+      when: deactivate_backup

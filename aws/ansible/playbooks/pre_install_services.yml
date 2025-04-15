@@ -1,0 +1,494 @@
+---
+# Pre-install services and dependencies for the current VM to support clustered failover
+- name: Pre-install services and dependencies
+  hosts: localhost  # Run only on the current VM
+  connection: local  # Explicitly use local connection
+  become: yes
+  gather_facts: no  # Skip initial gathering facts to prevent early lock issues
+  
+  pre_tasks:
+    # Simple check that host is reachable before proceeding
+    - name: Check if host is reachable
+      ping:
+      
+    # Selectively gather only the facts we need
+    - name: Gather minimal facts
+      setup:
+        gather_subset:
+          - '!all'
+          - 'min'
+      
+  tasks:
+    # Identify which VM we're running on
+    - name: Get VM IP address
+      shell: hostname -I | awk '{print $1}'
+      register: vm_ip
+      changed_when: false
+
+    - name: Set VM role facts
+      set_fact:
+        is_messaging_vm: "{{ vm_ip.stdout == '10.0.0.21' }}"
+        is_frontend_vm: "{{ vm_ip.stdout == '10.0.8.49' }}"
+        is_backend_vm: "{{ vm_ip.stdout == '10.0.0.22' }}"
+        is_database_vm: "{{ vm_ip.stdout == '10.0.10.169' }}"
+        # These are used for conditional service activation, not package installation
+        is_rabbitmq_vm: "{{ vm_ip.stdout == '10.0.0.21' or vm_ip.stdout == '10.0.8.49' }}"
+        is_mysql_vm: "{{ vm_ip.stdout == '10.0.10.169' or vm_ip.stdout == '10.0.0.22' }}"
+        vm_hostname: "{{ 'messaging' if vm_ip.stdout == '10.0.0.21' else ('frontend' if vm_ip.stdout == '10.0.8.49' else ('backend' if vm_ip.stdout == '10.0.0.22' else 'database')) }}"
+
+    # Check for and wait for any existing apt processes to finish
+    - name: Check for running apt processes
+      shell: pgrep apt | wc -l
+      register: apt_processes
+      changed_when: false
+
+    - name: Wait for apt processes to finish if any are running
+      shell: pgrep apt | wc -l
+      register: apt_processes_check
+      until: apt_processes_check.stdout|int == 0
+      retries: 10
+      delay: 10
+      changed_when: false
+      when: apt_processes.stdout|int > 0
+      
+    # Check if apt cache needs updating
+    - name: Check apt cache update time
+      stat:
+        path: /var/lib/apt/periodic/update-success-stamp
+      register: apt_cache_timestamp
+      changed_when: false
+
+    # Only update the cache if it's older than 3600 seconds (1 hour)
+    - name: Update apt cache if needed
+      apt:
+        update_cache: yes
+      register: apt_update_result
+      retries: 1
+      delay: 20
+      until: apt_update_result is success
+      when: apt_cache_timestamp.stat.exists == false or 
+            ansible_date_time.epoch|int - apt_cache_timestamp.stat.mtime|int > 3600
+
+    # Add a killswitch for hanging apt processes 
+    # (Uncomment only when absolutely necessary!)
+    # - name: Force release apt locks if stuck (only enable if absolutely necessary)
+    #   shell: |
+    #     rm -f /var/lib/dpkg/lock
+    #     rm -f /var/lib/dpkg/lock-frontend
+    #     rm -f /var/lib/apt/lists/lock
+    #     rm -f /var/cache/apt/archives/lock
+    #   when: apt_processes.stdout|int > 0 and ansible_date_time.epoch|int - apt_processes_check.stat.mtime|int > 600
+    #   ignore_errors: yes
+    
+    # Install all packages on all VMs to support clustered architecture
+    - name: Check installed packages (improved check)
+      shell: |
+        if dpkg-query -W {{ item }} >/dev/null 2>&1; then
+          if dpkg-query -W -f='${Status}\n' {{ item }} 2>/dev/null | grep -q 'install ok installed'; then
+            echo "INSTALLED"
+          else
+            echo "BROKEN"
+          fi
+        else
+          echo "NOT_INSTALLED"
+        fi
+      register: pkg_check
+      changed_when: false
+      failed_when: false
+      loop:
+        - python3
+        - python3-pip
+        - python3-dev
+        - build-essential
+        - git
+        - curl
+        - wget
+        - unzip
+        - net-tools
+        - iputils-ping
+        - vim
+        - htop
+        - ntp
+        - ufw
+        - nginx
+        - nodejs
+        - npm
+        - erlang
+        - rabbitmq-server
+        - mysql-server
+        - mysql-client
+        - python3-mysqldb
+        - php
+        - php-cli
+        - php-mbstring
+        - php-xml
+        - php-mysql
+        - php-bcmath
+        - php-curl
+        - php-fpm
+        - php-amqp
+        - redis-server
+    
+    - name: Debug package check results
+      debug:
+        msg: "Package {{ item.item }}: {{ item.stdout }}"
+      loop: "{{ pkg_check.results }}"
+      
+    - name: Create list of packages to install
+      set_fact:
+        packages_to_install: "{{ packages_to_install | default([]) + [item.item] }}"
+      loop: "{{ pkg_check.results }}"
+      when: item.stdout != "INSTALLED"
+
+    - name: Install all required packages for clustered architecture
+      apt:
+        name: "{{ packages_to_install | default([]) }}"
+        state: present
+        force: yes  # Force reinstallation even if package is already marked as installed
+      register: apt_install_result
+      retries: 1
+      delay: 30
+      until: apt_install_result is success
+      when: packages_to_install is defined and packages_to_install | length > 0
+      
+    # Verify critical commands exist after installation
+    - name: Verify critical commands exist
+      shell: "command -v {{ item }} || echo 'COMMAND_NOT_FOUND'"
+      register: cmd_check
+      changed_when: false
+      failed_when: false
+      loop:
+        - python3
+        - pip3
+        - node
+        - npm
+        - mysql
+        - rabbitmqctl
+        - redis-cli
+        - php
+        - nginx
+      
+    - name: Debug command verification results
+      debug:
+        msg: "Command {{ item.item }}: {{ 'FOUND' if item.stdout != 'COMMAND_NOT_FOUND' else 'NOT FOUND' }}"
+      loop: "{{ cmd_check.results }}"
+
+    # Install Python packages using apt instead of pip to comply with PEP 668
+    - name: Install common Python packages
+      apt:
+        name:
+          - python3-pika  # For RabbitMQ integration
+          - python3-requests  # For HTTP requests
+          - python3-redis  # For distributed locking
+          - python3-flask  # For the monitoring API
+          - ansible  # For Ansible worker
+        state: present
+      register: apt_python_install_result
+      retries: 1
+      delay: 10
+      until: apt_python_install_result is success
+
+    # Install Composer on all VMs
+    - name: Install Composer
+      shell: |
+        curl -sS https://getcomposer.org/installer | php
+        sudo mv composer.phar /usr/local/bin/composer
+      args:
+        creates: /usr/local/bin/composer
+
+    # Create project directories on all VMs
+    - name: Create project directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+        owner: ubuntu
+        group: ubuntu
+      loop:
+        - /home/ubuntu/Capstone-Group-01/aws/services/health
+        - /home/ubuntu/Capstone-Group-01/aws/services/monitor
+        - /home/ubuntu/Capstone-Group-01/aws/services/worker
+        - /home/ubuntu/Capstone-Group-01/aws/ansible/playbooks
+        - /home/ubuntu/Capstone-Group-01/aws/ansible/inventory
+        - /home/ubuntu/Capstone-Group-01/aws/ansible/templates
+        - /opt/monitoring
+        - /var/www/frontend
+        - /var/www/backend
+
+    # PHP dependencies - installed on all VMs
+    - name: Install PHP AMQP extension globally
+      shell: |
+        mkdir -p /tmp/php-deps
+        cd /tmp/php-deps
+        composer require php-amqplib/php-amqplib
+      args:
+        creates: /tmp/php-deps/vendor/php-amqplib
+      ignore_errors: yes
+      register: composer_result
+      retries: 1
+      delay: 10
+      until: composer_result is success or composer_result is failed
+
+    # Check if RabbitMQ is properly installed and available
+    - name: Check if RabbitMQ package is installed
+      shell: "dpkg-query -W -f='${Status}\n' rabbitmq-server 2>/dev/null | grep -c 'install ok installed' || echo '0'"
+      register: rabbitmq_pkg_installed
+      changed_when: false
+      failed_when: false
+      when: is_rabbitmq_vm
+
+    - name: Check if RabbitMQ service exists
+      shell: "systemctl list-unit-files | grep -c rabbitmq-server.service || echo '0'"
+      register: rabbitmq_service_exists
+      changed_when: false
+      failed_when: false
+      when: is_rabbitmq_vm
+
+    - name: Check if RabbitMQ directory exists
+      stat:
+        path: /var/lib/rabbitmq
+      register: rabbitmq_dir
+      when: is_rabbitmq_vm
+
+    - name: Set RabbitMQ availability fact
+      set_fact:
+        rabbitmq_available: "{{ rabbitmq_pkg_installed.stdout|int > 0 and rabbitmq_service_exists.stdout|int > 0 and rabbitmq_dir.stat.exists|default(false) }}"
+      when: is_rabbitmq_vm
+
+    - name: Display RabbitMQ status
+      debug:
+        msg: "RabbitMQ on {{ vm_hostname }} VM: {{ 'Available and configured' if (is_rabbitmq_vm and rabbitmq_available|bool) else ('Not properly installed' if is_rabbitmq_vm else 'Not required on this VM') }}"
+
+    # Set up RabbitMQ only on messaging and frontend VMs where it's properly installed
+    - name: Enable and start RabbitMQ
+      service:
+        name: rabbitmq-server
+        state: started
+        enabled: yes
+      when: is_rabbitmq_vm and rabbitmq_available|bool
+      ignore_errors: yes  # In case RabbitMQ fails to start, we'll handle it later
+
+    - name: Create RabbitMQ admin user
+      shell: |
+        rabbitmqctl add_user admin admin || echo "User already exists"
+        rabbitmqctl set_user_tags admin administrator
+        rabbitmqctl set_permissions -p / admin ".*" ".*" ".*"
+      args:
+        creates: /var/lib/rabbitmq/.admin_user_created
+      when: is_rabbitmq_vm and rabbitmq_available|bool
+      ignore_errors: yes  # In case user already exists
+
+    - name: Mark RabbitMQ admin user as created
+      file:
+        path: /var/lib/rabbitmq/.admin_user_created
+        state: touch
+        mode: '0644'
+      when: is_rabbitmq_vm and rabbitmq_available|bool
+      ignore_errors: yes  # Add ignore_errors here too for consistency
+
+    # Set up MySQL - configure on all VMs but only start on database VM initially
+    - name: Ensure MySQL configuration directory exists
+      file:
+        path: /etc/mysql/mysql.conf.d
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+      ignore_errors: yes  # In case the directory doesn't exist yet
+
+    - name: Configure MySQL for remote connections
+      lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address\s*=\s*127.0.0.1'
+        line: 'bind-address = 0.0.0.0'
+        create: yes
+        mode: '0644'
+        owner: root
+        group: root
+      ignore_errors: yes  # In case the file doesn't exist yet
+
+    - name: Start MySQL service on database VM
+      service:
+        name: mysql
+        state: started
+        enabled: yes
+      when: is_database_vm
+      ignore_errors: yes  # In case MySQL fails to start
+
+    # Install PyMySQL for Ansible MySQL modules
+    - name: Install PyMySQL using pip
+      pip:
+        name: PyMySQL
+        state: present
+      when: is_database_vm
+      ignore_errors: yes
+
+    # Check if MySQL Python module is available
+    - name: Check if MySQL Python module is available
+      shell: python3 -c "import pymysql" 2>/dev/null || echo "not-available"
+      register: mysql_module_check
+      changed_when: false
+      failed_when: false
+      when: is_database_vm
+
+    - name: Set MySQL module availability fact
+      set_fact:
+        mysql_module_available: "{{ mysql_module_check.rc|default(1) == 0 }}"
+      when: is_database_vm
+
+    - name: Display MySQL module status
+      debug:
+        msg: "MySQL Python module on {{ vm_hostname }} VM: {{ 'Available' if (is_database_vm and mysql_module_available|bool) else ('Not available' if is_database_vm else 'Not required on this VM') }}"
+      when: is_database_vm
+
+    - name: Create database and user (only on database VM)
+      block:
+        - name: Create database
+          mysql_db:
+            name: real_estate
+            state: present
+          vars:
+            ansible_python_interpreter: /usr/bin/python3
+
+        - name: Create MySQL user
+          mysql_user:
+            name: root
+            host: '%'
+            password: admin
+            priv: 'real_estate.*:ALL'
+            state: present
+          vars:
+            ansible_python_interpreter: /usr/bin/python3
+      when: is_database_vm and mysql_module_available|bool
+      ignore_errors: yes  # Skip if MySQL isn't configured yet
+
+    # Fallback to direct MySQL commands if Python module is not available
+    - name: Create database using direct MySQL command (fallback)
+      shell: mysql -e "CREATE DATABASE IF NOT EXISTS real_estate;"
+      when: is_database_vm and not mysql_module_available|bool
+      ignore_errors: yes
+
+    - name: Create MySQL user using direct MySQL command (fallback)
+      shell: |
+        mysql -e "CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'admin';"
+        mysql -e "GRANT ALL PRIVILEGES ON real_estate.* TO 'root'@'%';"
+        mysql -e "FLUSH PRIVILEGES;"
+      when: is_database_vm and not mysql_module_available|bool
+      ignore_errors: yes
+
+    # Start Redis on all VMs - needed for distributed locking with improved service detection
+    - name: Check for Redis service name
+      shell: "systemctl list-units --type=service | grep -i redis | awk '{print $1}' | head -1 || echo 'not-found'"
+      register: redis_service_name
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Set Redis service fact
+      set_fact:
+        redis_service: "{{ redis_service_name.stdout if redis_service_name.stdout != 'not-found' else 'redis-server' }}"
+
+    - name: Ensure Redis is running
+      service:
+        name: "{{ redis_service }}"
+        state: started
+        enabled: yes
+      ignore_errors: yes
+      register: redis_start_result
+
+    - name: Display Redis status message
+      debug:
+        msg: "Redis service ({{ redis_service }}) status: {{ 'Running' if not redis_start_result.failed else 'Not available - will be handled by activation playbooks' }}"
+
+    # Configure SSH for Ansible on all VMs
+    - name: Ensure .ssh directory exists
+      file:
+        path: /home/ubuntu/.ssh
+        state: directory
+        mode: '0700'
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Generate SSH key if it doesn't exist
+      command: ssh-keygen -t rsa -b 4096 -f /home/ubuntu/.ssh/id_rsa -N ""
+      args:
+        creates: /home/ubuntu/.ssh/id_rsa
+      become_user: ubuntu
+
+    # Check for time synchronization packages and install if needed
+    - name: Check for time synchronization packages
+      shell: "dpkg-query -W -f='${Status}\n' {{ item }} 2>/dev/null | grep -c 'install ok installed' || echo '0'"
+      register: time_sync_check
+      changed_when: false
+      failed_when: false
+      loop:
+        - ntp
+        - systemd-timesyncd
+        - chrony
+
+    - name: Install time synchronization if none available
+      apt:
+        name: ntp
+        state: present
+      when: time_sync_check.results | map(attribute='stdout') | map('int') | sum == 0
+      register: ntp_install_result
+      retries: 1
+      delay: 10
+      until: ntp_install_result is success
+      ignore_errors: yes
+
+    # Set up time synchronization with improved service detection
+    - name: Check for time synchronization services
+      shell: |
+        if systemctl list-units --type=service | grep -q 'ntp.service'; then
+          echo "ntp"
+        elif systemctl list-units --type=service | grep -q 'systemd-timesyncd.service'; then
+          echo "systemd-timesyncd"
+        elif systemctl list-units --type=service | grep -q 'chrony.service'; then
+          echo "chrony"
+        else
+          echo "none"
+        fi
+      register: time_sync_service
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Ensure NTP is running (if available)
+      service:
+        name: ntp
+        state: started
+        enabled: yes
+      when: time_sync_service.stdout == "ntp"
+      ignore_errors: yes
+
+    - name: Ensure systemd-timesyncd is running (if available)
+      service:
+        name: systemd-timesyncd
+        state: started
+        enabled: yes
+      when: time_sync_service.stdout == "systemd-timesyncd"
+      ignore_errors: yes
+
+    - name: Ensure chrony is running (if available)
+      service:
+        name: chrony
+        state: started
+        enabled: yes
+      when: time_sync_service.stdout == "chrony"
+      ignore_errors: yes
+
+    - name: Display time synchronization status
+      debug:
+        msg: "Time synchronization service ({{ time_sync_service.stdout }}) status: {{ 'Running' if time_sync_service.stdout != 'none' else 'Not available - consider installing ntp, systemd-timesyncd, or chrony' }}"
+
+    # Set system limits for RabbitMQ and MySQL
+    - name: Set system limits for services
+      pam_limits:
+        domain: '*'
+        limit_type: "{{ item.limit_type }}"
+        limit_item: "{{ item.limit_item }}"
+        value: "{{ item.value }}"
+      loop:
+        - { limit_type: soft, limit_item: nofile, value: 65536 }
+        - { limit_type: hard, limit_item: nofile, value: 65536 }
+        - { limit_type: soft, limit_item: nproc, value: 65536 }
+        - { limit_type: hard, limit_item: nproc, value: 65536 }

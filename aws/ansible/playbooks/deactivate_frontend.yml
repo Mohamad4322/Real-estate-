@@ -1,0 +1,45 @@
+---
+- name: Deactivate Frontend Backup
+  hosts: frontend_backups
+  become: yes
+  vars:
+    recovered_instance: "{{ recovered_instance }}"
+    
+  tasks:
+    - name: Check if this host should deactivate
+      set_fact:
+        deactivate_backup: "{{ inventory_hostname != recovered_instance }}"
+      
+    - name: Stop Frontend service
+      shell: |
+        cd ~/Capstone-Group-01/demo || { echo 'Demo directory not found!'; exit 1; }
+        if pgrep -f 'react-scripts' > /dev/null; then
+            echo 'Stopping Frontend Service...'
+            ./kill-frontend.sh
+            echo 'Frontend service stopped successfully.'
+        else
+            echo 'Frontend service is not running.'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      become: yes
+      become_user: ubuntu
+      when: deactivate_backup
+      
+    - name: Disable Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/frontend
+        state: absent
+      when: deactivate_backup
+      
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+      when: deactivate_backup
+      
+    - name: Remove virtual IP
+      command: ip addr del 10.0.8.200/24 dev eth0
+      ignore_errors: yes
+      when: deactivate_backup

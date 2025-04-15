@@ -1,0 +1,22 @@
+---
+- name: Deactivate Database Backup
+  hosts: database_backups
+  become: yes
+  vars:
+    recovered_instance: "{{ recovered_instance }}"
+    
+  tasks:
+    - name: Check if this host should deactivate
+      set_fact:
+        deactivate_backup: "{{ inventory_hostname != recovered_instance }}"
+      
+    - name: Stop MySQL service
+      service:
+        name: mysql
+        state: stopped
+      when: deactivate_backup
+      
+    - name: Remove virtual IP
+      command: ip addr del 10.0.10.200/24 dev eth0
+      ignore_errors: yes
+      when: deactivate_backup

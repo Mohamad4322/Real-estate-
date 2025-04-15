@@ -1,0 +1,13 @@
+[Unit]
+Description=Ansible Worker Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/bin/python3 /home/ubuntu/Capstone-Group-01/aws/services/worker/ansible_worker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

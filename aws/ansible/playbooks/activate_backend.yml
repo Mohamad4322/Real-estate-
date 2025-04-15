@@ -1,0 +1,61 @@
+---
+- name: Activate Backend Backup
+  hosts: backend_backups
+  become: yes
+  vars:
+    failed_instance: "{{ failed_instance }}"
+    
+  tasks:
+    - name: Check if this host should activate
+      set_fact:
+        activate_backup: "{{ inventory_hostname != failed_instance }}"
+      
+    - name: Update backend environment variables
+      template:
+        src: /home/ubuntu/Capstone-Group-01/aws/ansible/templates/backend.env.j2
+        dest: "/var/www/backend/.env"
+      vars:
+        db_host: "{{ hostvars['database-server']['ansible_host'] }}"
+        rabbitmq_host: "{{ hostvars['messaging-server']['ansible_host'] }}"
+      when: activate_backup
+      
+    - name: Start Node.js backend service
+      shell: |
+        cd /Capstone-Group-01/backend || { echo 'Backend directory not found!'; exit 1; }
+        if ss -tuln | grep -q ':8081'; then
+            echo 'Backend service is already running on port 8081.'
+        else
+            echo 'Starting Backend Service...'
+            nohup node server.js 2>&1 &
+            disown
+            echo 'Backend Service started successfully.'
+        fi
+        exit 0
+      args:
+        executable: /bin/bash
+      become: yes
+      become_user: ubuntu
+      when: activate_backup
+      
+    - name: Start PHP-FPM service
+      service:
+        name: php-fpm
+        state: started
+        enabled: yes
+      when: activate_backup
+      
+    - name: Configure virtual IP
+      command: ip addr add 10.0.0.210/24 dev eth0
+      ignore_errors: yes
+      when: activate_backup
+      
+    - name: Update Route 53 DNS record
+      route53:
+        state: present
+        zone: "yourdomain.com"
+        record: "api.yourdomain.com"
+        type: A
+        ttl: 60
+        value: "{{ ansible_default_ipv4.address }}"
+        overwrite: yes
+      when: activate_backup
