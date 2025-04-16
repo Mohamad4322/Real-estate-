@@ -1,9 +1,10 @@
-import React, { useState, useRef } from "react";
+// src/pages/Search.js
+import React, { useState, useRef, useEffect } from "react";
 import { GoogleMap, LoadScript, Marker } from "@react-google-maps/api";
+import ApiClient from "../services/apiClient";
 import "./Search.css";
 
-const REAL_ESTATE_API_KEY = process.env.REACT_APP_REALESTATE_API_KEY;
-const GOOGLE_API_KEY = process.env.REACT_APP_GOOGLE_MAPS_API_KEY;
+// No API keys needed - they're managed by the backend
 
 const darkMapStyle = [
   { elementType: "geometry", stylers: [{ color: "#212121" }] },
@@ -53,32 +54,40 @@ const Search = () => {
     setError("");
     setProperties([]);
 
-    const baseUrl = "https://api.rentcast.io/v1/properties";
-    const queryParams = new URLSearchParams();
-
-    Object.entries(formData).forEach(([key, value]) => {
-      if (value) queryParams.append(key, value);
-    });
-
     try {
-      const response = await fetch(`${baseUrl}?${queryParams.toString()}`, {
-        headers: {
-          "X-Api-Key": REAL_ESTATE_API_KEY,
-          Accept: "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Error: ${response.status} ${response.statusText}`);
+      // Use our API client to search for properties
+      const searchResponse = await ApiClient.searchProperties(formData);
+      
+      if (searchResponse.status !== 'success') {
+        throw new Error(searchResponse.message || "Error searching properties");
       }
+      
+      const data = searchResponse.data;
 
-      const data = await response.json();
-
+      // Process properties and get street view images from our backend
       const updatedProperties = await Promise.all(
         data.map(async (property) => {
           if (property.latitude && property.longitude) {
-            const streetViewUrl = `https://maps.googleapis.com/maps/api/streetview?size=600x300&location=${property.latitude},${property.longitude}&fov=90&key=${GOOGLE_API_KEY}`;
-            return { ...property, streetViewUrl };
+            try {
+              // Use our API Client to get street view URL
+              const streetViewResponse = await ApiClient.getStreetViewUrl(
+                property.latitude,
+                property.longitude,
+                "600x300",
+                90
+              );
+              
+              if (streetViewResponse.status === 'success') {
+                return { 
+                  ...property, 
+                  streetViewUrl: streetViewResponse.data.url 
+                };
+              }
+              return property;
+            } catch (err) {
+              console.error("Error getting street view:", err);
+              return property;
+            }
           }
           return property;
         })
@@ -86,6 +95,7 @@ const Search = () => {
 
       setProperties(updatedProperties);
 
+      // If we have properties, update the map center based on the first one
       if (updatedProperties.length > 0) {
         setMapCenter({
           lat: updatedProperties[0].latitude,
@@ -94,7 +104,7 @@ const Search = () => {
         setMapZoom(17);
       }
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "An error occurred while searching for properties");
     } finally {
       setLoading(false);
     }
@@ -112,6 +122,41 @@ const Search = () => {
     }
   };
   
+  // When an address is entered, we can geocode it to set the map center
+  const geocodeAddress = async () => {
+    if (formData.address && formData.city && formData.state) {
+      try {
+        const fullAddress = `${formData.address}, ${formData.city}, ${formData.state} ${formData.zipCode}`;
+        const geocodeResponse = await ApiClient.geocodeAddress(fullAddress);
+        
+        if (geocodeResponse.status === 'success' && 
+            geocodeResponse.data.results && 
+            geocodeResponse.data.results.length > 0) {
+          
+          const { lat, lng } = geocodeResponse.data.results[0].geometry.location;
+          setMapCenter({ lat, lng });
+          
+          if (mapRef.current) {
+            mapRef.current.panTo({ lat, lng });
+            mapRef.current.setZoom(15);
+          }
+        }
+      } catch (err) {
+        console.error("Geocoding error:", err);
+      }
+    }
+  };
+
+  // When address fields change, try to geocode the address
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (formData.address && formData.city && formData.state) {
+        geocodeAddress();
+      }
+    }, 1000); // Debounce the geocoding
+    
+    return () => clearTimeout(timer);
+  }, [formData.address, formData.city, formData.state, formData.zipCode]);
 
   return (
     <div className="search-page">
@@ -159,7 +204,7 @@ const Search = () => {
       </div>
 
       <div className="map-container">
-        <LoadScript googleMapsApiKey={GOOGLE_API_KEY}>
+        <LoadScript googleMapsApiKey="">
           <GoogleMap
             mapContainerStyle={mapContainerStyle}
             center={mapCenter}
@@ -169,7 +214,11 @@ const Search = () => {
           >
             {properties.map((property, index) =>
               property.latitude && property.longitude ? (
-                <Marker key={index} position={{ lat: property.latitude, lng: property.longitude }} title={property.formattedAddress} />
+                <Marker 
+                  key={index}
+                  position={{ lat: property.latitude, lng: property.longitude }} 
+                  title={property.formattedAddress} 
+                />
               ) : null
             )}
           </GoogleMap>
